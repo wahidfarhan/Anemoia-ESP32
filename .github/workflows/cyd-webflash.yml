@@ -1,0 +1,96 @@
+name: Build and publish CYD WebFlash
+
+on:
+  push:
+    branches: [ui-light-bangla-touch]
+    paths:
+      - '**.c'
+      - '**.cpp'
+      - '**.h'
+      - '**.ino'
+      - 'platform.txt'
+      - 'partitions.csv'
+      - 'User_Setups/**'
+      - '.github/workflows/cyd-webflash.yml'
+      - 'WebFlash/index.html'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: cyd-webflash-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+        with:
+          version: 1.1.1
+      - name: Install toolchain and libraries
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.2.1
+          arduino-cli lib install 'TFT_eSPI@2.5.43'
+          arduino-cli lib install 'SdFat@2.3.0'
+          cp platform.txt ~/.arduino15/packages/esp32/hardware/esp32/3.2.1/platform.txt
+          cp User_Setups/CYD/User_Setup.h ~/Arduino/libraries/TFT_eSPI/User_Setup.h
+      - name: Compile CYD ST7789 firmware
+        run: |
+          mkdir -p build
+          FLAGS='-DOPTIMIZATION_FLAGS -Ofast -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -funroll-loops -fno-tree-vectorize -frename-registers -fno-plt -flto -DCHEAP_YELLOW_DISPLAY_CONF -DSCREEN_SWAP_BYTES'
+          arduino-cli compile \
+            --fqbn 'esp32:esp32:esp32:PartitionScheme=custom,EventsCore=0' \
+            --build-property "compiler.cpp.extra_flags=$FLAGS" \
+            --build-property "compiler.c.extra_flags=$FLAGS" \
+            --output-dir build .
+      - name: Stage WebFlash files
+        run: |
+          mkdir -p WebFlash/binaries/cyd-st7789 WebFlash/manifests
+          cp build/*.ino.bin WebFlash/binaries/cyd-st7789/firmware.bin
+          cp build/*.ino.bootloader.bin WebFlash/binaries/cyd-st7789/bootloader.bin
+          cp build/*.ino.partitions.bin WebFlash/binaries/cyd-st7789/partitions.bin
+          cat > WebFlash/manifests/cyd-st7789.json <<'EOF'
+          {
+            "name": "CodingVerse CYD ST7789",
+            "version": "1.0.0",
+            "builds": [{
+              "chipFamily": "ESP32",
+              "parts": [
+                {"path": "../binaries/cyd-st7789/bootloader.bin", "offset": 4096},
+                {"path": "../binaries/cyd-st7789/partitions.bin", "offset": 32768},
+                {"path": "../binaries/cyd-st7789/firmware.bin", "offset": 65536}
+              ]
+            }]
+          }
+          EOF
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cyd-st7789-webflash
+          path: WebFlash
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cyd-st7789-webflash
+          path: WebFlash
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: WebFlash
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
